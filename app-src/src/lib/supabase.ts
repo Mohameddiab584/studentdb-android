@@ -44,6 +44,10 @@ export type Student = {
   updated_at: string;
 };
 
+export type Graduate = Student & {
+  graduation_year: string;
+};
+
 export type StudentInput = Omit<Student, 'id' | 'created_at' | 'updated_at' | 'gender' | 'birth_date'> & {
   gender?: string;
   birth_date?: string | null;
@@ -61,6 +65,7 @@ export type SchoolSettings = {
 type DbShape = {
   students: Student[];
   school_settings: SchoolSettings[];
+  graduates: Graduate[];
 };
 
 const STORAGE_KEY = 'school-db-offline-v1';
@@ -82,6 +87,8 @@ function loadDb(): DbShape {
     if (raw) {
       const parsed = JSON.parse(raw) as DbShape;
       if (parsed && Array.isArray(parsed.students) && Array.isArray(parsed.school_settings)) {
+        // Databases created before graduates existed have no graduates array.
+        if (!Array.isArray((parsed as DbShape).graduates)) (parsed as DbShape).graduates = [];
         db = parsed;
         return db;
       }
@@ -89,7 +96,7 @@ function loadDb(): DbShape {
   } catch {
     /* fall through to seed */
   }
-  db = { students: [], school_settings: [{ ...seedSettings }] };
+  db = { students: [], school_settings: [{ ...seedSettings }], graduates: [] };
   persist();
   return db;
 }
@@ -306,12 +313,15 @@ class QueryBuilder implements PromiseLike<Result> {
 
   private tableRows(): Row[] {
     const d = loadDb();
-    return (this.table === 'students' ? d.students : d.school_settings) as unknown as Row[];
+    if (this.table === 'students') return d.students as unknown as Row[];
+    if (this.table === 'graduates') return d.graduates as unknown as Row[];
+    return d.school_settings as unknown as Row[];
   }
 
   private setTableRows(rows: Row[]): void {
     const d = loadDb();
     if (this.table === 'students') d.students = rows as unknown as Student[];
+    else if (this.table === 'graduates') d.graduates = rows as unknown as Graduate[];
     else d.school_settings = rows as unknown as SchoolSettings[];
   }
 
@@ -388,7 +398,7 @@ class QueryBuilder implements PromiseLike<Result> {
           }
         }
         if (row.id === undefined || row.id === null) {
-          row.id = this.table === 'students' ? newId() : 1;
+          row.id = this.table === 'school_settings' ? 1 : newId();
         }
         row.created_at = row.created_at ?? nowIso();
         row.updated_at = nowIso();

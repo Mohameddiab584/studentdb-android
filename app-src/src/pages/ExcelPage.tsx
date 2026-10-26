@@ -1,7 +1,8 @@
 import { useState, useRef } from 'react';
 import { FileSpreadsheet, Upload, Download, FileDown, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { supabase, type StudentInput } from '../lib/supabase';
-import { GRADE_LABELS } from '../lib/constants';
+import { GRADE_LABELS, FIELD_LABELS } from '../lib/constants';
+import { normalizeChoiceValue, normalizeClassroom, toWesternDigits, CHOICE_FIELDS } from '../lib/normalize';
 import { importStudentsFromExcel, downloadExcelTemplate, exportStudentsToExcel } from '../lib/excel';
 import { parseNationalId } from '../lib/nationalId';
 import type { Student } from '../lib/supabase';
@@ -35,7 +36,9 @@ const EXCEL_FIELD_MAP: Record<string, keyof StudentInput> = {
 export function ExcelPage({ showToast }: Props) {
   const [selectedGrade, setSelectedGrade] = useState<'first' | 'second' | 'third'>('first');
   const [importing, setImporting] = useState(false);
-  const [importResult, setImportResult] = useState<{ success: number; errors: string[] } | null>(null);
+  const [importResult, setImportResult] = useState<{ success: number; errors: string[]; warnings: string[] } | null>(null);
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanResult, setCleanResult] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const handleImport = async (file: File) => {
@@ -45,6 +48,7 @@ export function ExcelPage({ showToast }: Props) {
       const rows = await importStudentsFromExcel(file);
       let success = 0;
       const errors: string[] = [];
+      const warnings: string[] = [];
 
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i];
@@ -60,12 +64,30 @@ export function ExcelPage({ showToast }: Props) {
           }
         }
 
+        // توحيد كلمات حقول الاختيارات: أي صيغة معروفة تتحول
+        // للقيمة المعتمدة؛ والقيم غير المعروفة تُستورد كما هي مع
+        // تنبيه، ولا تُخمَّن أبدًا.
+        for (const f of CHOICE_FIELDS) {
+          const val = obj[f];
+          if (typeof val === 'string' && val !== '') {
+            const r = normalizeChoiceValue(f, val);
+            if (r.known) {
+              (obj as Record<string, unknown>)[f] = r.value;
+            } else {
+              warnings.push(`الصف ${i + 2}: قيمة غير معروفة في "${FIELD_LABELS[f]}" ("${val}") — استُوردت كما هي، راجعها`);
+            }
+          }
+        }
+        if (typeof obj.classroom === 'string') {
+          obj.classroom = normalizeClassroom(obj.classroom);
+        }
+
         if (!obj.code || !obj.name || !obj.national_id) {
           errors.push(`الصف ${i + 2}: بيانات ناقصة (كود/اسم/رقم قومي)`);
           continue;
         }
 
-        const nationalId = String(obj.national_id).replace(/\D/g, '');
+        const nationalId = toWesternDigits(String(obj.national_id)).replace(/\D/g, '');
         if (nationalId.length !== 14) {
           errors.push(`الصف ${i + 2}: الرقم القومي يجب أن يكون 14 رقم`);
           continue;
@@ -87,7 +109,7 @@ export function ExcelPage({ showToast }: Props) {
           division: obj.division || '',
           guardian_name: obj.guardian_name || '',
           mother_name: obj.mother_name || '',
-          phone: obj.phone || '',
+          phone: obj.phone ? toWesternDigits(obj.phone) : '',
           address: obj.address || '',
           enrollment_status: obj.enrollment_status || '',
           nationality: obj.nationality || 'مصري',
@@ -109,7 +131,7 @@ export function ExcelPage({ showToast }: Props) {
         }
       }
 
-      setImportResult({ success, errors });
+      setImportResult({ success, errors, warnings });
       if (success > 0) showToast(`تم استيراد ${success} طالب بنجاح`, 'success');
       if (errors.length > 0) showToast(`يوجد ${errors.length} خطأ في الاستيراد`, 'error');
     } catch {
@@ -127,6 +149,48 @@ export function ExcelPage({ showToast }: Props) {
     }
     exportStudentsToExcel(data as Student[], `${GRADE_LABELS[grade]}.xlsx`, GRADE_LABELS[grade]);
     showToast('تم تصدير البيانات بنجاح');
+  };
+
+  const handleCleanExisting = async () => {
+    setCleaning(true);
+    setCleanResult(null);
+    try {
+      let rowsChanged = 0;
+      let valuesChanged = 0;
+      for (const table of ['students', 'graduates'] as const) {
+        const { data } = await supabase.from(table).select('*');
+        const rows = (data || []) as Record<string, unknown>[];
+        for (const row of rows) {
+          const changed: Record<string, string> = {};
+          for (const f of CHOICE_FIELDS) {
+            const val = row[f];
+            if (typeof val === 'string' && val !== '') {
+              const r = normalizeChoiceValue(f, val);
+              if (r.known && r.value !== val) changed[f] = r.value;
+            }
+          }
+          if (typeof row.classroom === 'string') {
+            const nc = normalizeClassroom(row.classroom);
+            if (nc !== row.classroom) changed.classroom = nc;
+          }
+          if (Object.keys(changed).length > 0) {
+            const { error } = await supabase.from(table).update(changed).eq('id', row.id as string);
+            if (!error) {
+              rowsChanged++;
+              valuesChanged += Object.keys(changed).length;
+            }
+          }
+        }
+      }
+      const msg = rowsChanged === 0
+        ? 'لا توجد قيم تحتاج توحيدًا — البيانات الموجودة سليمة.'
+        : `تم توحيد ${valuesChanged} قيمة في ${rowsChanged} سجل.`;
+      setCleanResult(msg);
+      showToast(msg);
+    } catch {
+      showToast('تعذر تنظيف البيانات، حاول مجددًا.', 'error');
+    }
+    setCleaning(false);
   };
 
   const handleExportAll = async () => {
@@ -233,6 +297,19 @@ export function ExcelPage({ showToast }: Props) {
                   </div>
                 </div>
               )}
+              {importResult.warnings.length > 0 && (
+                <div className="bg-amber-50 rounded-xl p-3">
+                  <div className="flex items-center gap-2 text-amber-700 mb-2">
+                    <AlertCircle size={18} />
+                    <span className="text-sm font-medium">{importResult.warnings.length} تنبيه: قيم غير معروفة استُوردت كما هي</span>
+                  </div>
+                  <div className="max-h-40 overflow-y-auto space-y-1">
+                    {importResult.warnings.map((w, i) => (
+                      <p key={i} className="text-xs text-amber-700">{w}</p>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -275,6 +352,23 @@ export function ExcelPage({ showToast }: Props) {
             </ol>
           </div>
         </div>
+      </div>
+
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mt-6">
+        <h2 className="font-bold text-slate-800 mb-2">توحيد كلمات البيانات الموجودة</h2>
+        <p className="text-sm text-slate-500 mb-4 leading-relaxed">
+          يمر على الطلاب والخريجين المسجلين حاليًا ويحوّل أي قيمة معروفة بصيغة مختلفة إلى القيمة المعتمدة (مثل فرنساوي ← فرنسي، عام ← انتظام). القيم غير المعروفة تُترك كما هي ولا تُخمَّن.
+        </p>
+        <button
+          onClick={handleCleanExisting}
+          disabled={cleaning}
+          className="px-6 py-2.5 rounded-xl bg-blue-700 text-white text-sm font-medium hover:bg-blue-800 transition-colors disabled:opacity-50"
+        >
+          {cleaning ? 'جاري التنظيف...' : 'تنظيف البيانات الموجودة'}
+        </button>
+        {cleanResult && (
+          <p className="text-sm text-emerald-700 bg-emerald-50 rounded-xl p-3 mt-4">{cleanResult}</p>
+        )}
       </div>
     </div>
   );

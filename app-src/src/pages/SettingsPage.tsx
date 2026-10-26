@@ -1,8 +1,12 @@
 import { useEffect, useState } from 'react';
-import { School, Save, MapPin, Building2, Lock } from 'lucide-react';
-import { supabase, type SchoolSettings as SchoolSettingsType } from '../lib/supabase';
+import { School, Save, MapPin, Building2, Lock, Trash2, Download } from 'lucide-react';
+import { supabase, type SchoolSettings as SchoolSettingsType, type Student, type Graduate } from '../lib/supabase';
+import { GRADE_LABELS, EDUCATION_TYPES } from '../lib/constants';
+import { exportStudentsToExcel } from '../lib/excel';
 import { authChange, hasAuthBridge } from '../lib/auth';
 import { Input } from '../components/Input';
+import { Select } from '../components/Select';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 
 type Props = {
   settings: SchoolSettingsType | null;
@@ -72,6 +76,117 @@ export function SettingsPage({ settings, onUpdate, showToast }: Props) {
     }
     setSaving(false);
   };
+
+  // ---- Danger zone: scoped data deletion ----
+  // Deletion touches students (or graduates by year) only — school
+  // settings are never affected. Every deletion is confirmed with
+  // the exact scope and count, and the scope can be exported first.
+  const [delScope, setDelScope] = useState<'all' | 'grade' | 'category' | 'grad-year'>('all');
+  const [delGrade, setDelGrade] = useState<'first' | 'second' | 'third'>('first');
+  const [delCategory, setDelCategory] = useState('');
+  const [delYear, setDelYear] = useState('');
+  const [gradYears, setGradYears] = useState<string[]>([]);
+  const [affectedCount, setAffectedCount] = useState<number | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteResult, setDeleteResult] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from('graduates').select('graduation_year');
+      setGradYears([...new Set(((data || []) as { graduation_year: string }[]).map((r) => r.graduation_year).filter(Boolean))].sort());
+    })();
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      if (delScope === 'category' && !delCategory) { setAffectedCount(null); return; }
+      if (delScope === 'grad-year' && !delYear) { setAffectedCount(null); return; }
+      let count = 0;
+      if (delScope === 'grad-year') {
+        const { data } = await supabase.from('graduates').select('*').eq('graduation_year', delYear);
+        count = (data || []).length;
+      } else {
+        let q = supabase.from('students').select('*');
+        if (delScope !== 'all') q = q.eq('grade', delGrade);
+        if (delScope === 'category') q = q.eq('education_type', delCategory);
+        const { data } = await q;
+        count = (data || []).length;
+      }
+      setAffectedCount(count);
+    })();
+  }, [delScope, delGrade, delCategory, delYear]);
+
+  const delScopeLabel = () => {
+    if (delScope === 'all') return 'جميع الطلاب في كل الصفوف';
+    if (delScope === 'grade') return GRADE_LABELS[delGrade];
+    if (delScope === 'category') return `${GRADE_LABELS[delGrade]} — ${delCategory}`;
+    return `خريجو سنة ${delYear}`;
+  };
+
+  const fetchScopeRows = async (): Promise<Student[] | Graduate[]> => {
+    if (delScope === 'grad-year') {
+      const { data } = await supabase.from('graduates').select('*').eq('graduation_year', delYear);
+      return (data || []) as Graduate[];
+    }
+    let q = supabase.from('students').select('*');
+    if (delScope !== 'all') q = q.eq('grade', delGrade);
+    if (delScope === 'category') q = q.eq('education_type', delCategory);
+    const { data } = await q;
+    return (data || []) as Student[];
+  };
+
+  const handleExportScope = async () => {
+    const rows = await fetchScopeRows();
+    if (rows.length === 0) {
+      showToast('لا توجد بيانات للتصدير', 'info');
+      return;
+    }
+    if (delScope === 'grad-year') {
+      exportStudentsToExcel(rows as Student[], `الخريجون_${delYear}.xlsx`, 'الخريجين', {
+        header: 'سنة التخرج',
+        value: (s) => (s as unknown as Graduate).graduation_year || '',
+      });
+    } else {
+      const name = delScope === 'all'
+        ? 'جميع_الطلاب_قبل_المسح'
+        : delScope === 'grade'
+          ? `${GRADE_LABELS[delGrade]}_قبل_المسح`
+          : `${GRADE_LABELS[delGrade]}_${delCategory}_قبل_المسح`;
+      exportStudentsToExcel(rows as Student[], `${name}.xlsx`, 'الطلاب');
+    }
+    showToast('تم تصدير النطاق بنجاح — يمكنك الآن المسح بأمان');
+  };
+
+  const handleDeleteScope = async () => {
+    setConfirmDelete(false);
+    setDeleting(true);
+    setDeleteResult(null);
+    let error = null;
+    if (delScope === 'grad-year') {
+      ({ error } = await supabase.from('graduates').delete().eq('graduation_year', delYear));
+    } else {
+      let qb = supabase.from('students').delete();
+      if (delScope !== 'all') qb = qb.eq('grade', delGrade);
+      if (delScope === 'category') qb = qb.eq('education_type', delCategory);
+      ({ error } = await qb);
+    }
+    setDeleting(false);
+    if (error) {
+      showToast('حدث خطأ أثناء المسح', 'error');
+      return;
+    }
+    const msg = `تم مسح ${affectedCount ?? 0} ${delScope === 'grad-year' ? 'خريجًا' : 'طالبًا'} من (${delScopeLabel()}).`;
+    setDeleteResult(msg);
+    showToast(msg);
+    setAffectedCount(0);
+  };
+
+  const canAct =
+    affectedCount !== null &&
+    affectedCount > 0 &&
+    (delScope !== 'category' || delCategory !== '') &&
+    (delScope !== 'grad-year' || delYear !== '');
 
   return (
     <div className="p-6 lg:p-8 max-w-3xl" dir="rtl">
@@ -170,6 +285,91 @@ export function SettingsPage({ settings, onUpdate, showToast }: Props) {
           </div>
         </div>
       )}
+
+      <div className="bg-white rounded-2xl shadow-sm border border-red-200 p-6 space-y-5 mt-6">
+        <div className="flex items-center gap-2 text-red-700 font-bold pb-3 border-b border-red-100">
+          <Trash2 size={20} />
+          <span>مسح البيانات (منطقة خطر)</span>
+        </div>
+        <p className="text-sm text-slate-500 leading-relaxed">
+          المسح يشمل الطلاب فقط، ولا يمس الخريجين إلا باختيار «خريجو سنة محددة». إعدادات المدرسة لا تتأثر أبدًا. المسح نهائي — الرجوع ممكن فقط من نسخة احتياطية أو ملف Excel مصدّر.
+        </p>
+        <Select
+          label="نطاق المسح"
+          value={delScope}
+          onChange={(v) => setDelScope(v as typeof delScope)}
+          options={[
+            { value: 'all', label: 'كل الصفوف' },
+            { value: 'grade', label: 'صف محدد' },
+            { value: 'category', label: 'فئة محددة داخل صف محدد' },
+            { value: 'grad-year', label: 'خريجو سنة محددة' },
+          ]}
+        />
+        {(delScope === 'grade' || delScope === 'category') && (
+          <Select
+            label="الصف"
+            value={delGrade}
+            onChange={(v) => setDelGrade(v as typeof delGrade)}
+            options={[
+              { value: 'first', label: GRADE_LABELS.first },
+              { value: 'second', label: GRADE_LABELS.second },
+              { value: 'third', label: GRADE_LABELS.third },
+            ]}
+          />
+        )}
+        {delScope === 'category' && (
+          <Select
+            label="الفئة"
+            value={delCategory}
+            onChange={setDelCategory}
+            options={[...EDUCATION_TYPES]}
+          />
+        )}
+        {delScope === 'grad-year' && (
+          <Select
+            label="سنة التخرج"
+            value={delYear}
+            onChange={setDelYear}
+            options={gradYears}
+            placeholder={gradYears.length === 0 ? 'لا يوجد خريجون بعد' : 'اختر سنة التخرج'}
+          />
+        )}
+        <div className="bg-red-50 rounded-xl p-4 text-sm text-red-800">
+          {affectedCount === null
+            ? 'اختر النطاق لعرض عدد السجلات التي سيتم مسحها.'
+            : `سيتم مسح ${affectedCount} ${delScope === 'grad-year' ? 'خريجًا' : 'طالبًا'} من (${delScopeLabel()}).`}
+        </div>
+        <div className="flex flex-wrap gap-3">
+          <button
+            onClick={handleExportScope}
+            disabled={!canAct}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl border border-emerald-300 text-emerald-700 text-sm font-medium hover:bg-emerald-50 disabled:opacity-50"
+          >
+            <Download size={18} />
+            تصدير النطاق أولًا
+          </button>
+          <button
+            onClick={() => setConfirmDelete(true)}
+            disabled={!canAct || deleting}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50"
+          >
+            <Trash2 size={18} />
+            {deleting ? 'جاري المسح...' : 'مسح النطاق'}
+          </button>
+        </div>
+        {deleteResult && (
+          <p className="text-sm text-emerald-700 bg-emerald-50 rounded-xl p-3">{deleteResult}</p>
+        )}
+      </div>
+
+      <ConfirmDialog
+        open={confirmDelete}
+        title="تأكيد المسح النهائي"
+        message={`سيتم مسح ${affectedCount ?? 0} ${delScope === 'grad-year' ? 'خريجًا' : 'طالبًا'} نهائيًا من (${delScopeLabel()}). إعدادات المدرسة لن تتأثر. لا يمكن التراجع عن هذا الإجراء — الرجوع ممكن فقط من نسخة احتياطية أو ملف Excel مصدّر.`}
+        confirmText="مسح نهائي"
+        onConfirm={handleDeleteScope}
+        onCancel={() => setConfirmDelete(false)}
+      />
 
       <div className="mt-4 bg-blue-50 rounded-xl p-4 text-sm text-blue-800 border border-blue-100">
         <p className="font-medium mb-1">ملاحظة</p>

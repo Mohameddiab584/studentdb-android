@@ -45,7 +45,7 @@ function saveWorkbook(wb: XLSX.WorkBook, fileName: string): void {
   XLSX.writeFile(wb, name);
 }
 
-export function exportStudentsToExcel(students: Student[], fileName: string, sheetName = 'الطلاب') {
+export function exportStudentsToExcel(students: Student[], fileName: string, sheetName = 'الطلاب', extraColumn?: { header: string; value: (s: Student) => string | number }) {
   const rows = students.map((s, i) => {
     const row: Record<string, string | number> = {};
     row['م'] = i + 1;
@@ -68,6 +68,7 @@ export function exportStudentsToExcel(students: Student[], fileName: string, she
     row['الجنسية'] = s.nationality;
     row['الدمج'] = s.integration;
     row['الديانة'] = s.religion;
+    if (extraColumn) row[extraColumn.header] = extraColumn.value(s);
     return row;
   });
 

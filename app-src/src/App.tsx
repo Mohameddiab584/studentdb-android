@@ -9,6 +9,8 @@ import { GradePage } from './pages/GradePage';
 import { ExcelPage } from './pages/ExcelPage';
 import { SearchPage } from './pages/SearchPage';
 import { ReportsPage } from './pages/ReportsPage';
+import { PromotionPage } from './pages/PromotionPage';
+import { GraduatesPage } from './pages/GraduatesPage';
 import { supabase, type SchoolSettings } from './lib/supabase';
 import { useToast } from './hooks/useToast';
 import type { SchoolSettings as ReportSettings } from './lib/reportUtils';
@@ -84,6 +86,8 @@ function App() {
         {page === 'third' && (
           <GradePage grade="third" settings={reportSettings} showToast={showToast} />
         )}
+        {page === 'graduates' && <GraduatesPage showToast={showToast} />}
+        {page === 'promotion' && <PromotionPage showToast={showToast} />}
         {page === 'excel' && <ExcelPage showToast={showToast} />}
         {page === 'search' && <SearchPage settings={reportSettings} showToast={showToast} />}
         {page === 'reports' && <ReportsPage settings={reportSettings} showToast={showToast} />}

@@ -7,6 +7,7 @@ import {
   FileBarChart,
   Settings,
   FileSpreadsheet,
+  ArrowUpCircle,
   Menu,
   X,
   School,
@@ -18,6 +19,8 @@ export type PageKey =
   | 'first'
   | 'second'
   | 'third'
+  | 'graduates'
+  | 'promotion'
   | 'excel'
   | 'search'
   | 'reports';
@@ -34,6 +37,8 @@ const NAV_ITEMS: { key: PageKey; label: string; icon: typeof LayoutDashboard }[]
   { key: 'first', label: 'الصف الأول الثانوي', icon: Users },
   { key: 'second', label: 'الصف الثاني الثانوي', icon: Users },
   { key: 'third', label: 'الصف الثالث الثانوي', icon: Users },
+  { key: 'graduates', label: 'الخريجون', icon: GraduationCap },
+  { key: 'promotion', label: 'ترحيل الطلاب', icon: ArrowUpCircle },
   { key: 'excel', label: 'استيراد / تصدير Excel', icon: FileSpreadsheet },
   { key: 'search', label: 'البحث عن طالب', icon: Search },
   { key: 'reports', label: 'مركز تقارير زكي', icon: FileBarChart },
